@@ -1,0 +1,141 @@
+services:
+  namenode:
+    image: apache/hadoop:3
+    container_name: homepedia-namenode
+    hostname: namenode
+    command: [ "hdfs", "namenode" ]
+    ports:
+      - 9870:9870
+    env_file:
+      - .env
+    networks:
+      - homepedia
+    volumes:
+      - ./config/:/etc/hadoop
+
+  datanode:
+    image: apache/hadoop:3
+    container_name: homepedia-datanode
+    command: [ "hdfs", "datanode" ]
+    env_file:
+      - .env
+    networks:
+      - homepedia
+    volumes:
+      - ./config/:/etc/hadoop
+
+  resourcemanager:
+    image: apache/hadoop:3
+    container_name: homepedia-resourcemanager
+    hostname: resourcemanager
+    command: [ "yarn", "resourcemanager" ]
+    ports:
+      - 8088:8088
+    env_file:
+      - .env
+    networks:
+      - homepedia
+
+  nodemanager:
+    image: apache/hadoop:3
+    container_name: homepedia-nodemanager
+    command: [ "yarn", "nodemanager" ]
+    env_file:
+      - .env
+    networks:
+      - homepedia
+
+  app:
+    env_file: ./app/.env
+    build:
+      context: ./app
+      dockerfile: ./Dockerfile
+    container_name: homepedia-app
+    restart: always
+    networks:
+      - homepedia
+      - proxy
+    depends_on:
+      - mongo
+      - postgres
+      - namenode
+      - datanode
+      - resourcemanager
+      - nodemanager
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.homepedia-app.rule=Host(`homepedia.icaro.fr`)"
+      - "traefik.http.services.homepedia-app.loadbalancer.server.port=80"
+      - "traefik.http.routers.homepedia-app.tls=true"
+      - "traefik.http.routers.homepedia-app.tls.certresolver=letsencrypt"
+      - "traefik.docker.network=proxy"
+
+  postgres:
+    image: postgres:16
+    container_name: homepedia-postgres
+    restart: always
+    env_file: .env
+    ports:
+      - "5433:5432"
+    networks:
+      - homepedia
+    volumes:
+      - ./postgres:/var/lib/postgresql/data
+
+  mongo:
+    image: bitnami/mongodb:7.0.12
+    container_name: homepedia-mongo
+    restart: always
+    env_file: .env
+    ports:
+      - "27017:27017"
+    networks:
+      - homepedia
+
+  spark-master:
+    build:
+      context: .
+      dockerfile: ./spark/master_dockerfile
+    container_name: homepedia-spark-master
+    volumes:
+      - ./spark-logs:/opt/spark/spark-events
+      - ./config:/spark/config
+    env_file:
+      - .env
+    networks:
+      - homepedia
+    depends_on:
+      - namenode
+      - datanode
+    ports:
+      - "7077:7077"
+      - "8082:8082"
+      - "6066:6066"
+
+  spark-worker:
+    build:
+      context: ./spark
+      dockerfile: ./worker_dockerfile
+    # container_name: homepedia-spark-worker
+    env_file:
+      - .env
+    scale: 6
+    volumes:
+      - ./spark-logs:/opt/spark/spark-events
+      - ./config:/spark/config
+    networks:
+      - homepedia
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+
+volumes:
+  datanode:
+
+
+networks:
+  homepedia:
+    driver: bridge
+  proxy:
+    external: true
