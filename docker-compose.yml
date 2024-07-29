@@ -1,106 +1,141 @@
 services:
-  website:
-    env_file: ./website/.env.local
-    build:
-      context: ./website
-      dockerfile: ./Dockerfile
-    container_name: "${WEBSITE_CONTAINER_NAME}"
-    restart: always
+  namenode:
+    image: apache/hadoop:3
+    container_name: homepedia-namenode
+    hostname: namenode
+    command: [ "hdfs", "namenode" ]
     ports:
-      - "${WEBSITE_PORTS}"
+      - 9870:9870
+    env_file:
+      - .env
     networks:
-      - sound-network
-      - proxy
+      - homepedia
     volumes:
-      - ./website/public:/app/public
+      - ./config/:/etc/hadoop
+
+  datanode:
+    image: apache/hadoop:3
+    container_name: homepedia-datanode
+    command: [ "hdfs", "datanode" ]
+    env_file:
+      - .env
+    networks:
+      - homepedia
+    volumes:
+      - ./config/:/etc/hadoop
+
+  resourcemanager:
+    image: apache/hadoop:3
+    container_name: homepedia-resourcemanager
+    hostname: resourcemanager
+    command: [ "yarn", "resourcemanager" ]
+    ports:
+      - 8088:8088
+    env_file:
+      - .env
+    networks:
+      - homepedia
+
+  nodemanager:
+    image: apache/hadoop:3
+    container_name: homepedia-nodemanager
+    command: [ "yarn", "nodemanager" ]
+    env_file:
+      - .env
+    networks:
+      - homepedia
+
+  app:
+    env_file: ./app/.env
+    build:
+      context: ./app
+      dockerfile: ./Dockerfile
+    container_name: homepedia-app
+    restart: always
+    networks:
+      - homepedia
+      - proxy
     depends_on:
-      - db
+      - mongo
+      - postgres
+      - namenode
+      - datanode
+      - resourcemanager
+      - nodemanager
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.${WEBSITE_CONTAINER_NAME}.rule=${WEBSITE_TRAEFIK_HOSTS}"
-      - "traefik.http.services.${WEBSITE_CONTAINER_NAME}.loadbalancer.server.port=${WEBSITE_TRAEFIK_PORT}"
-      - "traefik.http.routers.${WEBSITE_CONTAINER_NAME}.tls=true"
-      - "traefik.http.routers.${WEBSITE_CONTAINER_NAME}.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.homepedia-app.rule=Host(`homepedia.icaro.fr`)"
+      - "traefik.http.services.homepedia-app.loadbalancer.server.port=80"
+      - "traefik.http.routers.homepedia-app.tls=true"
+      - "traefik.http.routers.homepedia-app.tls.certresolver=letsencrypt"
       - "traefik.docker.network=proxy"
 
-  db:
+  postgres:
     image: postgres:16
-    container_name: "${DB_CONTAINER_NAME}"
+    container_name: homepedia-postgres
     restart: always
-    env_file: ./db/.env
+    env_file: .env
     ports:
-      - "${DB_PORTS}"
+      - "5433:5432"
     networks:
-      - sound-network
+      - homepedia
     volumes:
-      - ./postgres/data:/var/lib/postgresql/data
+      - ./postgres:/var/lib/postgresql/data
 
-  api:
-    env_file: ./api/.env
-    build:
-      context: ./api
-      dockerfile: ./Dockerfile
-    container_name: "${API_CONTAINER_NAME}"
+  mongo:
+    image: bitnami/mongodb:7.0.12
+    container_name: homepedia-mongo
     restart: always
+    env_file: .env
     ports:
-      - "${API_PORTS}"
+      - "27017:27017"
     networks:
-      - sound-network
-      - proxy
+      - homepedia
+
+  spark-master:
+    build:
+      context: .
+      dockerfile: ./spark/master_dockerfile
+    container_name: homepedia-spark-master
+    volumes:
+      - ./spark-logs:/opt/spark/spark-events
+      - ./config:/spark/config
+    env_file:
+      - .env
+    networks:
+      - homepedia
     depends_on:
-      - db
-    volumes:
-      - ./samples:/usr/src/samples
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.${API_CONTAINER_NAME}.rule=${API_TRAEFIK_HOSTS}"
-      - "traefik.http.services.${API_CONTAINER_NAME}.loadbalancer.server.port=${API_TRAEFIK_PORT}"
-      - "traefik.http.routers.${API_CONTAINER_NAME}.tls=true"
-      - "traefik.http.routers.${API_CONTAINER_NAME}.tls.certresolver=letsencrypt"
-      - "traefik.docker.network=proxy"
-
-  nginx:
-    image: nginx:latest
-    container_name: "${NGINX_CONTAINER_NAME}"
-    restart: always
-    volumes:
-      - ./nginx/conf:/etc/nginx/conf.d
-      - ./samples:/usr/share/nginx/html:ro
+      - namenode
+      - datanode
     ports:
-      - "${NGINX_CONTAINER_PORTS}"
-    networks:
-      - sound-network
-      - proxy
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.${NGINX_CONTAINER_NAME}.rule=${NGINX_TRAEFIK_HOSTS}"
-      - "traefik.http.services.${NGINX_CONTAINER_NAME}.loadbalancer.server.port=80"
-      - "traefik.http.routers.${NGINX_CONTAINER_NAME}.tls=true"
-      - "traefik.http.routers.${NGINX_CONTAINER_NAME}.tls.certresolver=letsencrypt"
-      - "traefik.docker.network=proxy"
+      - "7077:7077"
+      - "8082:8082"
+      - "6066:6066"
 
-  spotdl:
+  spark-worker:
     build:
-      context: ./spotdl
-      dockerfile: ./Dockerfile
-    container_name: "${SPOTDL_CONTAINER_NAME}"
-    restart: always
-    networks:
-      - proxy
-    ports:
-      - "${SPOTDL_PORTS}"
+      context: ./spark
+      dockerfile: ./worker_dockerfile
+    # container_name: homepedia-spark-worker
+    env_file:
+      - .env
+    scale: 6
     volumes:
-      - ./spotdl/tracks:/app/tracks
-    labels:
-      - "traefik.enable=true"
-      - "traefik.http.routers.${SPOTDL_CONTAINER_NAME}.rule=${SPOTDL_TRAEFIK_HOSTS}"
-      - "traefik.http.services.${SPOTDL_CONTAINER_NAME}.loadbalancer.server.port=3002"
-      - "traefik.http.routers.${SPOTDL_CONTAINER_NAME}.tls=true"
-      - "traefik.http.routers.${SPOTDL_CONTAINER_NAME}.tls.certresolver=letsencrypt"
-      - "traefik.docker.network=proxy"
+      - ./spark-logs:/opt/spark/spark-events
+      - ./config:/spark/config
+    networks:
+      - homepedia
+    depends_on:
+      - spark-master
+    environment:
+      - SPARK_MODE=worker
+
+volumes:
+  datanode:
+
 
 networks:
-  sound-network:
+  homepedia:
     driver: bridge
   proxy:
     external: true
